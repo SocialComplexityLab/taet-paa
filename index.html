@@ -1,7 +1,353 @@
-<html>
-<head><title>Hello, world</title></head>
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tæt på</title>
+<meta name="description" content="Skriv en adresse i København, og se alt det, kommunen ved om netop det sted: træer, gravearbejder, støj, sol, skybrud, lokalplan og det nærmeste toilet.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #0e0e10;
+    --fg-muted: #5b5f6b;
+    --rule: #e4e2da;
+    --surface: #ffffff;
+    --surface-2: #f1f0ea;
+    --sienna: #b8451e;
+    --clay: #d96a2c;
+    --mustard: #e8b126;
+    --olive: #7e8d20;
+    --teal: #107078;
+    --oxblood: #992c44;
+    --accent: var(--teal);
+    --serif: "Fraunces", "Palatino", Georgia, serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --gutter: clamp(1rem, 4vw, 2.5rem);
+    --stripe: linear-gradient(to right,
+      var(--sienna) 0 16.6667%, var(--clay) 16.6667% 33.3333%, var(--mustard) 33.3333% 50%,
+      var(--olive) 50% 66.6667%, var(--teal) 66.6667% 83.3333%, var(--oxblood) 83.3333% 100%);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1838; --fg: #e6eaf2; --fg-muted: #8a93a6; --rule: #1f2d56;
+      --surface: #152546; --surface-2: #1a2b50;
+      --sienna: #d85838; --clay: #e47a45; --mustard: #efc044; --olive: #9cb033; --teal: #3fa0a8; --oxblood: #b7405a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 1rem; line-height: 1.5;
+  }
+  .stripe { height: 6px; background: var(--stripe); }
+  header { padding: 1.25rem var(--gutter) 0.5rem; max-width: 64rem; margin: 0 auto; }
+  h1 { font-family: var(--serif); font-weight: 600; font-size: clamp(2.2rem, 7vw, 3.2rem); line-height: 1.05; margin: 0; letter-spacing: -0.01em; }
+  h1 small { display: block; font-family: var(--sans); font-weight: 400; font-size: 1rem; color: var(--fg-muted); margin-top: 0.4rem; letter-spacing: 0; }
+  main { max-width: 64rem; margin: 0 auto; padding: 0 var(--gutter) 2rem; }
+
+  .search { position: relative; display: flex; gap: 0.5rem; margin: 1rem 0 0.75rem; }
+  .search input {
+    flex: 1; min-width: 0; font: inherit; font-size: 1.05rem; padding: 0.7rem 0.9rem;
+    border: 1.5px solid var(--rule); border-radius: 10px; background: var(--surface); color: var(--fg);
+  }
+  .search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .search button {
+    font: inherit; font-weight: 600; font-size: 0.95rem; padding: 0.7rem 0.9rem; white-space: nowrap;
+    border: 0; border-radius: 10px; background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .search button:hover { filter: brightness(1.08); }
+  .suggest {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 1000;
+    background: var(--surface); border: 1.5px solid var(--rule); border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.12); overflow: hidden; display: none;
+  }
+  .suggest.open { display: block; }
+  .suggest div { padding: 0.6rem 0.9rem; cursor: pointer; border-top: 1px solid var(--rule); }
+  .suggest div:first-child { border-top: 0; }
+  .suggest div:hover, .suggest div.active { background: var(--surface-2); }
+  .status { color: var(--fg-muted); font-size: 0.9rem; min-height: 1.4em; margin: 0 0 0.5rem; }
+  .status b { color: var(--fg); font-weight: 600; }
+
+  #map { height: 320px; border-radius: 12px; border: 1.5px solid var(--rule); z-index: 0; }
+  @media (min-width: 720px) { #map { height: 400px; } }
+  .leaflet-container { font-family: var(--sans); }
+
+  .cards { display: grid; grid-template-columns: 1fr; gap: 0.9rem; margin-top: 1rem; }
+  @media (min-width: 720px) { .cards { grid-template-columns: 1fr 1fr; } }
+  .card {
+    background: var(--surface); border: 1.5px solid var(--rule); border-radius: 12px;
+    padding: 1rem 1.1rem 1.1rem; position: relative; overflow: hidden;
+  }
+  .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--c, var(--accent)); }
+  .card h2 { font-family: var(--serif); font-weight: 600; font-size: 1.35rem; margin: 0 0 0.5rem; line-height: 1.2; }
+  .card .body { font-size: 0.95rem; }
+  .card .body p { margin: 0.35rem 0; }
+  .card ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+  .card li { margin: 0.25rem 0; }
+  .muted { color: var(--fg-muted); }
+  .pending { color: var(--fg-muted); font-style: italic; }
+  .pending::after { content: ""; display: inline-block; width: 0.9em; height: 0.9em; margin-left: 0.4em; vertical-align: -0.15em;
+    border: 2px solid var(--rule); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .big { font-family: var(--serif); font-size: 1.9rem; font-weight: 500; line-height: 1.1; margin: 0.2rem 0; }
+  .big small { font-family: var(--sans); font-size: 0.85rem; font-weight: 400; color: var(--fg-muted); margin-left: 0.3rem; }
+  .tag { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; background: var(--surface-2); color: var(--fg); margin-right: 0.3rem; }
+  .tag.warn { background: var(--sienna); color: #fff; }
+  .tag.ok { background: var(--olive); color: #fff; }
+  .tag.mid { background: var(--mustard); color: #222; }
+  a { color: var(--accent); }
+  .err { color: var(--oxblood); }
+
+  footer { max-width: 64rem; margin: 0 auto; padding: 1.5rem var(--gutter) 3rem; color: var(--fg-muted); font-size: 0.85rem; border-top: 1px solid var(--rule); }
+  footer p { margin: 0.4rem 0; }
+</style>
+</head>
 <body>
-<h1>Hello, world</h1>
-<p>Projektledelsesdagen 2026. Her kommer snart noget.</p>
+<div class="stripe"></div>
+<header>
+  <h1>Tæt på<small>Alt det, Københavns Kommune ved om ét sted. Skriv en adresse, tryk "Hvor er jeg?", eller klik på kortet.</small></h1>
+</header>
+<main>
+  <div class="search">
+    <input id="q" type="search" autocomplete="off" placeholder="Skriv en adresse i København …" aria-label="Adresse">
+    <button id="geo" type="button">Hvor er jeg?</button>
+    <div id="suggest" class="suggest" role="listbox"></div>
+  </div>
+  <p id="status" class="status">Ingen adresse valgt endnu.</p>
+  <div id="map" role="img" aria-label="Kort over København"></div>
+  <div id="cards" class="cards"></div>
+</main>
+<footer>
+  <p><strong>Hvor kommer data fra?</strong> Alt hentes live i din browser fra Københavns Kommunes åbne kortserver
+    (<a href="https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&amp;request=GetCapabilities" rel="noopener">wfs-kbhkort.kk.dk</a>), som også driver kommunens egne kort.
+    Kortfliser fra <a href="https://www.openstreetmap.org/copyright" rel="noopener">OpenStreetMap</a>. Ingen data gemmes.</p>
+  <p id="fetched">Data hentet: endnu ikke.</p>
+  <p>Siden er bygget af en AI-agent (Claude) under et foredrag på Københavns Kommunes Projektledelsesdag den 28. oktober 2026, mens publikum så på. Fejl kan forekomme; tjek altid kommunens egne sider, før du stoler på et tal.</p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ---------- Konfiguration ----------
+const WFS = 'https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=1.0.0&request=GetFeature&outputFormat=json&SRSNAME=EPSG:4326';
+const TOPICS = [
+  { id: 'trees',   title: 'Træerne udenfor',          c: 'var(--olive)' },
+  { id: 'street',  title: 'På gaden lige nu',          c: 'var(--clay)' },
+  { id: 'traffic', title: 'Trafikmeldinger',           c: 'var(--sienna)' },
+  { id: 'noise',   title: 'Trafikstøj ved facaden',    c: 'var(--oxblood)' },
+  { id: 'solar',   title: 'Sol på taget',              c: 'var(--mustard)' },
+  { id: 'flood',   title: 'Skybrud og stormflod',      c: 'var(--teal)' },
+  { id: 'heat',    title: 'Varme en sommerdag',        c: 'var(--sienna)' },
+  { id: 'plan',    title: 'Lokalplan og zoner',        c: 'var(--teal)' },
+  { id: 'nearest', title: 'Nærmeste …',                c: 'var(--olive)' },
+];
+const LOADERS = {}; // id -> async (lat, lon, ctx) => html
+
+// ---------- Hjælpere ----------
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const nice = (v) => (v == null || v === 'None' || v === '' ? null : String(v));
+
+function bboxParam(lat, lon, d) {
+  return `${lon - d},${lat - d},${lon + d},${lat + d},EPSG:4326`;
+}
+async function wfs(layer, { lat, lon, d = 0.003, n = 50, cql = null } = {}) {
+  let url = `${WFS}&typeName=k101:${layer}&maxFeatures=${n}`;
+  if (lat != null) url += `&bbox=${bboxParam(lat, lon, d)}`;
+  if (cql) url += `&CQL_FILTER=${encodeURIComponent(cql)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${layer}: HTTP ${r.status}`);
+  const j = await r.json();
+  return j.features || [];
+}
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toR = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toR, dLon = (lon2 - lon1) * toR;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+// Alle koordinater i en geometri som [lon, lat]
+function coordsOf(geom) {
+  if (!geom) return [];
+  const out = [];
+  (function walk(c) { if (typeof c[0] === 'number') out.push(c); else c.forEach(walk); })(geom.coordinates);
+  return out;
+}
+function firstPoint(f) { const c = coordsOf(f.geometry); return c.length ? { lon: c[0][0], lat: c[0][1] } : null; }
+function minDist(f, lat, lon) {
+  let best = Infinity;
+  for (const [x, y] of coordsOf(f.geometry)) best = Math.min(best, haversine(lat, lon, y, x));
+  return best;
+}
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function contains(f, lat, lon) {
+  const g = f.geometry; if (!g) return false;
+  const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+  return polys.some((p) => pointInRing(lon, lat, p[0]) && !p.slice(1).some((h) => pointInRing(lon, lat, h)));
+}
+// Fladen, der indeholder punktet, ellers den nærmeste
+function containing(features, lat, lon) {
+  return features.find((f) => contains(f, lat, lon)) || nearest(features, lat, lon);
+}
+function nearest(features, lat, lon) {
+  let best = null, bd = Infinity;
+  for (const f of features) { const d = minDist(f, lat, lon); if (d < bd) { bd = d; best = f; } }
+  return best ? Object.assign(best, { _dist: bd }) : null;
+}
+function walkText(m) {
+  const w = m * 1.3, min = Math.max(1, Math.round(w / 5000 * 60));
+  return `${Math.round(w / 10) * 10} m, ca. ${min} min til fods`;
+}
+function fmtDate(s) {
+  s = nice(s); if (!s) return null;
+  let d;
+  const m = s.match(/^(\d{2})-(\d{2})-(\d{2})$/); // 10-10-26
+  if (m) d = new Date(2000 + +m[3], +m[2] - 1, +m[1]);
+  else d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function fmtRange(a, b) {
+  const fa = fmtDate(a), fb = fmtDate(b);
+  if (fa && fb) return `${fa} – ${fb}`;
+  return fa ? `fra ${fa}` : fb ? `til ${fb}` : '';
+}
+function setCard(id, html, cls = '') {
+  const el = document.getElementById('card-' + id);
+  if (el) el.querySelector('.body').innerHTML = cls ? `<p class="${cls}">${html}</p>` : html;
+}
+
+// ---------- Kort ----------
+const CPH = [55.6761, 12.5683];
+const map = L.map('map', { zoomControl: true }).setView(CPH, 12);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+let marker = null, ring = null, overlay = L.layerGroup().addTo(map);
+map.on('click', (e) => reverseAndShow(e.latlng.lat, e.latlng.lng));
+
+// ---------- Kort-grid ----------
+const cardsEl = $('#cards');
+for (const t of TOPICS) {
+  const div = document.createElement('section');
+  div.className = 'card'; div.id = 'card-' + t.id; div.style.setProperty('--c', t.c);
+  div.innerHTML = `<h2>${esc(t.title)}</h2><div class="body"><p class="muted">Vælg en adresse først.</p></div>`;
+  cardsEl.appendChild(div);
+}
+
+// ---------- Adressesøgning ----------
+const q = $('#q'), sug = $('#suggest'), statusEl = $('#status');
+let sugItems = [], sugActive = -1, debounceT = null, lastQuery = '';
+
+function cqlEscape(s) { return s.replace(/'/g, "''"); }
+async function suggest(text) {
+  text = text.trim();
+  if (text.length < 2) { closeSuggest(); return; }
+  lastQuery = text;
+  try {
+    const fs = await wfs('dar_adgangsadresser', { n: 8, cql: `adresse ILIKE '${cqlEscape(text)}%'` });
+    if (text !== lastQuery) return;
+    sugItems = fs.map((f) => ({ adresse: f.properties.adresse, lat: +f.properties.latitude, lon: +f.properties.longitude }));
+    renderSuggest();
+  } catch (e) { closeSuggest(); }
+}
+function renderSuggest() {
+  sug.innerHTML = sugItems.map((s, i) => `<div role="option" data-i="${i}" class="${i === sugActive ? 'active' : ''}">${esc(s.adresse)}</div>`).join('');
+  sug.classList.toggle('open', sugItems.length > 0);
+}
+function closeSuggest() { sug.classList.remove('open'); sugItems = []; sugActive = -1; }
+q.addEventListener('input', () => { clearTimeout(debounceT); sugActive = -1; debounceT = setTimeout(() => suggest(q.value), 220); });
+q.addEventListener('keydown', (e) => {
+  if (!sugItems.length) { if (e.key === 'Enter') suggest(q.value).then(() => sugItems[0] && pick(sugItems[0])); return; }
+  if (e.key === 'ArrowDown') { sugActive = (sugActive + 1) % sugItems.length; renderSuggest(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { sugActive = (sugActive - 1 + sugItems.length) % sugItems.length; renderSuggest(); e.preventDefault(); }
+  else if (e.key === 'Enter') { pick(sugItems[sugActive < 0 ? 0 : sugActive]); e.preventDefault(); }
+  else if (e.key === 'Escape') closeSuggest();
+});
+sug.addEventListener('mousedown', (e) => { const d = e.target.closest('[data-i]'); if (d) { pick(sugItems[+d.dataset.i]); e.preventDefault(); } });
+document.addEventListener('click', (e) => { if (!e.target.closest('.search')) closeSuggest(); });
+
+function pick(s) {
+  closeSuggest();
+  q.value = s.adresse;
+  show(s.lat, s.lon, s.adresse);
+}
+
+// ---------- "Hvor er jeg?" og klik på kortet ----------
+$('#geo').addEventListener('click', () => {
+  if (!navigator.geolocation) { statusEl.innerHTML = '<span class="err">Din browser kan ikke finde din position.</span>'; return; }
+  statusEl.innerHTML = '<span class="pending">Finder din position</span>';
+  navigator.geolocation.getCurrentPosition(
+    (p) => reverseAndShow(p.coords.latitude, p.coords.longitude),
+    (err) => { statusEl.innerHTML = `<span class="err">Kunne ikke finde din position (${esc(err.message)}).</span>`; },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
+});
+async function reverseAndShow(lat, lon) {
+  statusEl.innerHTML = '<span class="pending">Finder nærmeste adresse</span>';
+  try {
+    const fs = await wfs('dar_adgangsadresser', { lat, lon, d: 0.0008, n: 60 });
+    let best = null, bd = Infinity;
+    for (const f of fs) { const d = haversine(lat, lon, +f.properties.latitude, +f.properties.longitude); if (d < bd) { bd = d; best = f; } }
+    if (best && bd < 150) { q.value = best.properties.adresse; show(+best.properties.latitude, +best.properties.longitude, best.properties.adresse); }
+    else { q.value = ''; show(lat, lon, null); }
+  } catch (e) { show(lat, lon, null); }
+}
+
+// ---------- Vis et sted ----------
+let current = null, runId = 0;
+function show(lat, lon, adresse) {
+  const id = ++runId;
+  current = { lat, lon, adresse };
+  const label = adresse || `Punkt på kortet (${lat.toFixed(5)}, ${lon.toFixed(5)})`;
+  location.hash = adresse ? encodeURIComponent(adresse) : `${lat.toFixed(6)},${lon.toFixed(6)}`;
+  statusEl.innerHTML = `<b>${esc(label)}</b> <span class="muted">· alt inden for ca. 300 m</span>`;
+  document.title = `Tæt på · ${label}`;
+
+  if (marker) marker.remove(); if (ring) ring.remove(); overlay.clearLayers();
+  marker = L.marker([lat, lon]).addTo(map);
+  ring = L.circle([lat, lon], { radius: 300, color: '#107078', weight: 1.5, fillOpacity: 0.05 }).addTo(map);
+  map.setView([lat, lon], 16);
+
+  for (const t of TOPICS) setCard(t.id, LOADERS[t.id] ? 'henter…' : 'kommer snart', LOADERS[t.id] ? 'pending' : 'muted');
+  const ctx = { adresse, overlay };
+  for (const t of TOPICS) {
+    const fn = LOADERS[t.id]; if (!fn) continue;
+    fn(lat, lon, ctx).then((html) => { if (id === runId) setCard(t.id, html); })
+      .catch((e) => { if (id === runId) setCard(t.id, `Kunne ikke hentes lige nu (${esc(e.message)}).`, 'err'); });
+  }
+  $('#fetched').textContent = 'Data hentet: ' + new Date().toLocaleString('da-DK', { dateStyle: 'long', timeStyle: 'short' }) + '.';
+}
+
+// ---------- Start fra URL'ens hash ----------
+async function fromHash() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (!h) return;
+  const m = h.match(/^(-?\d+\.\d+),(-?\d+\.\d+)$/);
+  if (m) { show(+m[1], +m[2], null); return; }
+  statusEl.innerHTML = '<span class="pending">Slår adressen op</span>';
+  try {
+    const fs = await wfs('dar_adgangsadresser', { n: 1, cql: `adresse ILIKE '${cqlEscape(h)}'` });
+    if (fs.length) { q.value = fs[0].properties.adresse; show(+fs[0].properties.latitude, +fs[0].properties.longitude, fs[0].properties.adresse); }
+    else statusEl.innerHTML = `<span class="err">Kunne ikke finde "${esc(h)}".</span>`;
+  } catch (e) { statusEl.innerHTML = '<span class="err">Kunne ikke slå adressen op.</span>'; }
+}
+window.addEventListener('hashchange', () => {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (!current || (h !== current.adresse && h !== `${current.lat.toFixed(6)},${current.lon.toFixed(6)}`)) fromHash();
+});
+fromHash();
+</script>
 </body>
 </html>
