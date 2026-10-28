@@ -354,7 +354,14 @@ LOADERS.street = async (lat, lon, ctx) => {
     wfs('gravetilladelser_aktiv_aabne', { lat, lon, d: 0.003, n: 100 }),
   ]);
   const withDist = (fs) => fs.map((f) => ({ ...f.properties, dist: minDist(f, lat, lon), f })).filter((x) => x.dist <= 350).sort((a, b) => a.dist - b.dist);
-  const ev = withDist(events), dg = withDist(digs);
+  const dg = withDist(digs);
+  // Gravetilladelser findes også i det detaljerede lag; vis dem kun én gang, og slå ens sager sammen
+  const seen = new Set();
+  const ev = withDist(events).filter((e) => {
+    if (/grave/i.test(nice(e.sagstype) || '')) return false;
+    const key = `${e.sagsnr}|${e.lokation}|${e.kategori}`;
+    if (seen.has(key)) return false; seen.add(key); return true;
+  });
   for (const e of ev) L.geoJSON(e.f.geometry, { style: { color: '#d96a2c', weight: 2, fillOpacity: 0.15 } }).bindTooltip(`${nice(e.kategori) || nice(e.sagstype) || 'Tilladelse'}: ${nice(e.lokation) || ''}`).addTo(ctx.overlay);
   for (const d of dg) { const p = firstPoint(d.f); if (p) L.circleMarker([p.lat, p.lon], { radius: 6, color: '#b8451e', weight: 2, fillOpacity: 0.5 }).bindTooltip(`Gravearbejde: ${nice(d.lokation) || ''}`).addTo(ctx.overlay); }
   if (!ev.length && !dg.length) return '<p class="muted">Ingen tilladelser, arrangementer eller gravearbejder registreret inden for 300 m lige nu eller de kommende uger.</p>';
@@ -410,7 +417,7 @@ LOADERS.noise = async (lat, lon, ctx) => {
   const mx = (a) => Math.max(...a), mn = (a) => Math.min(...a);
   const rng = (a) => (a.length ? (mx(a) - mn(a) < 0.5 ? mx(a).toFixed(0) : `${mn(a).toFixed(0)}–${mx(a).toFixed(0)}`) : '?');
   const worst = lden.length ? mx(lden) : null;
-  const tag = worst == null ? '' : worst >= 68 ? '<span class="tag warn">over 68 dB, kommunens grænse for stærkt støjbelastet</span>' : worst > 58 ? '<span class="tag warn">over Miljøstyrelsens vejledende 58 dB</span>' : worst > 53 ? '<span class="tag mid">over WHO’s 53 dB</span>' : '<span class="tag ok">under WHO’s vejledende 53 dB</span>';
+  const tag = worst == null ? '' : worst >= 68 ? '<span class="tag warn">over 68 dB, grænsen for stærkt støjbelastet bolig</span>' : worst > 58 ? '<span class="tag warn">over Miljøstyrelsens vejledende 58 dB</span>' : worst > 53 ? '<span class="tag mid">over WHO’s 53 dB</span>' : '<span class="tag ok">under WHO’s vejledende 53 dB</span>';
   return `<p class="big">${rng(lden)} dB<small>L<sub>den</sub>, døgnvægtet</small></p><p class="big">${rng(lnight)} dB<small>L<sub>night</sub>, kl. 22–07</small></p><p>${tag}</p>` +
     `<p class="muted">Beregnet for ${how} i kommunens støjkortlægning 2022. WHO anbefaler under 53 dB L<sub>den</sub> for vejstøj; ved flere boliger vises spændet mellem den mindst og mest udsatte.</p>`;
 };
@@ -454,6 +461,82 @@ LOADERS.flood = async (lat, lon, ctx) => {
   else storm = `<li><b>100-års-stormflod</b>: <span class="tag ok">tørt</span></li>`;
   return `<ul>${row('100-års-regn, i dag', c10, c10 ? `(klasse ${c10} af 5)` : '')}${row('100-års-regn, 2110', c110, c110 ? `(klasse ${c110} af 5)` : '')}${storm}</ul>` +
     `<p class="muted">Kommunens skybrudsmodel for en regn, der statistisk falder én gang pr. 100 år, nu og med klimafremskrivning til 2110 (faktor 1,77). Klasserne er vanddybde på terræn; 0 er tørt. Stormflodskortet er en 100-års-hændelse med fremskrevet vandstand.</p>`;
+};
+
+// ---------- 7. Varme ----------
+LOADERS.heat = async (lat, lon, ctx) => {
+  const fs = await wfs('overfladetemp_gns_seneste_tre_aar', { lat, lon, d: 0.003, n: 400 });
+  if (!fs.length) return '<p class="muted">Ingen temperaturmåling for dette sted.</p>';
+  const here = containing(fs, lat, lon);
+  const t = +here.properties.overfladetemp;
+  const all = fs.map((f) => +f.properties.overfladetemp).filter((x) => !isNaN(x)).sort((a, b) => a - b);
+  const mean = all.reduce((a, b) => a + b, 0) / all.length, min = all[0], max = all[all.length - 1];
+  const diff = t - mean;
+  const tag = diff > 3 ? '<span class="tag warn">varmere end omgivelserne</span>' : diff < -3 ? '<span class="tag ok">køligere end omgivelserne</span>' : '<span class="tag mid">som omgivelserne</span>';
+  return `<p class="big">${isNaN(t) ? '?' : t.toLocaleString('da-DK', { maximumFractionDigits: 1 })} °C<small>overfladetemperatur, sommerdag</small></p><p>${tag}</p>` +
+    `<p>Inden for 300 m spænder overfladen fra <b>${min.toLocaleString('da-DK', { maximumFractionDigits: 1 })}</b> til <b>${max.toLocaleString('da-DK', { maximumFractionDigits: 1 })} °C</b>; gennemsnittet er ${mean.toLocaleString('da-DK', { maximumFractionDigits: 1 })} °C.</p>` +
+    `<p class="muted">Satellitmålt overfladetemperatur på en varm, skyfri sommerdag, gennemsnit af de seneste tre år. Et mål for byens varmeø: asfalt og tage bliver varme, træer og vand holder sig kølige.</p>`;
+};
+
+// ---------- 8. Lokalplan og zoner ----------
+LOADERS.plan = async (lat, lon, ctx) => {
+  const [lp, bz, pz] = await Promise.all([
+    wfs('lokalplaner_kk', { lat, lon, d: 0.0004, n: 20 }),
+    wfs('beboerzone', { lat, lon, d: 0.0004, n: 10 }),
+    wfs('parkeringszone', { lat, lon, d: 0.0004, n: 10 }),
+  ]);
+  const plans = lp.filter((f) => contains(f, lat, lon));
+  const active = plans.filter((f) => /vedtaget/i.test(nice(f.properties.lp_status) || ''));
+  const list = (active.length ? active : plans);
+  let html = '';
+  if (!list.length) html += '<p><b>Lokalplan:</b> <span class="muted">ingen lokalplan dækker præcis dette punkt.</span></p>';
+  else html += '<p><b>Lokalplan' + (list.length > 1 ? 'er' : '') + ':</b></p><ul>' + list.map((f) => { const p = f.properties;
+      return `<li>${nice(p.link) ? `<a href="${esc(p.link)}" rel="noopener">` : ''}<b>${esc(nice(p.plannavn) || 'Uden navn')}</b>${nice(p.link) ? '</a>' : ''} <span class="muted">(nr. ${esc(nice(p.plannr) || '?')})</span>` +
+        `${nice(p.anvendelse) ? '<br>' + esc(p.anvendelse) : ''}${nice(p.lp_status) ? ` <span class="tag">${esc(p.lp_status)}</span>` : ''}${nice(p.bekgjort) ? ` <span class="muted">bekendtgjort ${esc(fmtDate(p.bekgjort))}</span>` : ''}</li>`; }).join('') + '</ul>';
+  const b = bz.find((f) => contains(f, lat, lon));
+  html += b ? `<p><b>Beboerlicens:</b> zone <b>${esc(nice(b.properties.zone_navn) || b.properties.zone_kode)}</b>${nice(b.properties.beboerzone_pdf) ? ` · <a href="${esc(b.properties.beboerzone_pdf)}" rel="noopener">zonekort</a>` : ''}</p>`
+           : '<p><b>Beboerlicens:</b> <span class="muted">ikke i en beboerlicens-zone.</span></p>';
+  const z = pz.find((f) => contains(f, lat, lon));
+  if (z) { const p = z.properties; const dag = nice(p.ptakst_dag);
+    html += `<p><b>Parkering:</b> <b>${esc(nice(p.zone_navn) || '?')}</b>${nice(p.kategori) && p.kategori !== p.zone_navn ? ` <span class="tag">${esc(p.kategori)}</span>` : ''}${dag ? ` · ${esc(dag)} kr./time om dagen${nice(p.ptakst_aften) ? `, ${esc(p.ptakst_aften)} om aftenen` : ''}${nice(p.ptakst_nat) ? `, ${esc(p.ptakst_nat)} om natten` : ''}` : ''}</p>`; }
+  else html += '<p><b>Parkering:</b> <span class="muted">ingen p-zone registreret her.</span></p>';
+  return html;
+};
+
+// ---------- 9. Nærmeste ----------
+async function nearestOf(layers, lat, lon, filter = () => true) {
+  for (const d of [0.01, 0.03, 0.09]) {
+    const res = (await Promise.all(layers.map((l) => wfs(l, { lat, lon, d, n: 500 })))).flat().filter(filter);
+    const best = nearest(res, lat, lon);
+    if (best) return best;
+  }
+  return null;
+}
+LOADERS.nearest = async (lat, lon, ctx) => {
+  const items = [
+    { label: 'Offentligt toilet', layers: ['toilet_puma_agg_tmf_kk', 'toilet_puma_agg_andre_kk'], color: '#107078',
+      name: (p) => (nice(p.toilet_lokalitet) || nice(p.vejnavn_husnummer) || 'Toilet').split(';')[0].trim(),
+      extra: (p) => [nice(p.vejnavn_husnummer) && nice(p.vejnavn_husnummer).split(';')[0].trim(), nice(p.handicapadgang) === 'Ja' ? 'handicapadgang' : null, nice(p.aabningstid_doegn), nice(p.aabningsperiode)].filter(Boolean).join(' · ') },
+    { label: 'Legeplads', layers: ['legeplads'], color: '#e8b126',
+      name: (p) => nice(p.navn) || 'Legeplads', link: (p) => nice(p.link),
+      extra: (p) => [nice(p.adressebeskrivelse), nice(p.legeplads_type), nice(p.aldersgruppe) ? `${p.aldersgruppe} år` : null].filter(Boolean).join(' · ') },
+    { label: 'Bibliotek', layers: ['biblioteker'], color: '#992c44',
+      name: (p) => nice(p.navn) || 'Bibliotek', link: (p) => nice(p.link),
+      extra: (p) => [nice(p.adresse), nice(p.post_nr) ? `${p.post_nr} ${nice(p.postdistrikt) || ''}` : null].filter(Boolean).join(', ') },
+    { label: 'Drikkevandspost', layers: ['dp_vandinstallationer_p'], color: '#107078', filter: (f) => nice(f.properties.element) === 'Drikkepost',
+      name: (p) => nice(p.navn) || nice(p.stednavn) || 'Drikkepost',
+      extra: (p) => [nice(p.under_element), nice(p.status)].filter(Boolean).join(' · ') },
+  ];
+  const results = await Promise.all(items.map(async (it) => {
+    try { return { it, f: await nearestOf(it.layers, lat, lon, it.filter) }; } catch (e) { return { it, err: e }; }
+  }));
+  return '<ul>' + results.map(({ it, f, err }) => {
+    if (err) return `<li><b>${it.label}:</b> <span class="err">kunne ikke hentes</span></li>`;
+    if (!f) return `<li><b>${it.label}:</b> <span class="muted">ingen fundet inden for 10 km</span></li>`;
+    const p = f.properties, pt = firstPoint(f), link = it.link && it.link(p);
+    if (pt) L.circleMarker([pt.lat, pt.lon], { radius: 7, color: it.color, weight: 2, fillOpacity: 0.6 }).bindTooltip(`${it.label}: ${it.name(p)}`).addTo(ctx.overlay);
+    return `<li><b>${it.label}:</b> ${link ? `<a href="${esc(link)}" rel="noopener">` : ''}${esc(it.name(p))}${link ? '</a>' : ''}<br><span class="muted">${esc(walkText(f._dist))}${it.extra(p) ? ' · ' + esc(it.extra(p)) : ''}</span></li>`;
+  }).join('') + '</ul><p class="muted">Afstand er luftlinje gange 1,3, gangtid ved 5 km/t.</p>';
 };
 
 // ---------- Start fra URL'ens hash ----------
