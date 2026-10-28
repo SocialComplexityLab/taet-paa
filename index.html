@@ -330,6 +330,68 @@ function show(lat, lon, adresse) {
   $('#fetched').textContent = 'Data hentet: ' + new Date().toLocaleString('da-DK', { dateStyle: 'long', timeStyle: 'short' }) + '.';
 }
 
+// ---------- 1. Træer ----------
+LOADERS.trees = async (lat, lon, ctx) => {
+  const fs = await wfs('trae_basis', { lat, lon, d: 0.003, n: 400 });
+  const trees = fs.map((f) => { const p = firstPoint(f); return p && { ...f.properties, lat: p.lat, lon: p.lon, dist: haversine(lat, lon, p.lat, p.lon) }; })
+    .filter((t) => t && t.dist <= 300).sort((a, b) => a.dist - b.dist);
+  if (!trees.length) return '<p class="muted">Ingen kommunale træer inden for 300 m.</p>';
+  for (const t of trees) L.circleMarker([t.lat, t.lon], { radius: 3, color: '#7e8d20', weight: 1, fillOpacity: 0.7 })
+    .bindTooltip(`${nice(t.dansk_navn) || nice(t.traeart) || 'Træ'}${nice(t.planteaar) && /^\d{4}$/.test(t.planteaar) ? ', plantet ' + t.planteaar : ''}`).addTo(ctx.overlay);
+  const year = (t) => (/^\d{4}$/.test(nice(t.planteaar) || '') ? +t.planteaar : null);
+  const dated = trees.filter(year);
+  const oldest = dated.length ? dated.reduce((a, b) => (year(a) <= year(b) ? a : b)) : null;
+  const li = trees.slice(0, 5).map((t) => `<li><b>${esc(nice(t.dansk_navn) || 'Ukendt art')}</b> <span class="muted">(<i>${esc(nice(t.traeart) || '?')}</i>${year(t) ? ', plantet ' + year(t) : ''}${nice(t.kategori) ? ', ' + esc(t.kategori) : ''}) · ${Math.round(t.dist)} m</span></li>`).join('');
+  return `<p class="big">${trees.length}<small>kommunale træer inden for 300 m</small></p><p>De fem nærmeste:</p><ul>${li}</ul>` +
+    (oldest ? `<p>Det ældste med kendt planteår: <b>${esc(nice(oldest.dansk_navn) || oldest.traeart)}</b> fra <b>${year(oldest)}</b>, ${Math.round(oldest.dist)} m herfra${nice(oldest.stednavn) ? ' (' + esc(oldest.stednavn) + ')' : ''}.</p>`
+            : '<p class="muted">Ingen af dem har et registreret planteår.</p>');
+};
+
+// ---------- 2. På gaden lige nu ----------
+LOADERS.street = async (lat, lon, ctx) => {
+  const [events, digs] = await Promise.all([
+    wfs('raaden_over_vej_events_anonym_aktuelt', { lat, lon, d: 0.003, n: 100 }),
+    wfs('gravetilladelser_aktiv_aabne', { lat, lon, d: 0.003, n: 100 }),
+  ]);
+  const withDist = (fs) => fs.map((f) => ({ ...f.properties, dist: minDist(f, lat, lon), f })).filter((x) => x.dist <= 350).sort((a, b) => a.dist - b.dist);
+  const ev = withDist(events), dg = withDist(digs);
+  for (const e of ev) L.geoJSON(e.f.geometry, { style: { color: '#d96a2c', weight: 2, fillOpacity: 0.15 } }).bindTooltip(`${nice(e.kategori) || nice(e.sagstype) || 'Tilladelse'}: ${nice(e.lokation) || ''}`).addTo(ctx.overlay);
+  for (const d of dg) { const p = firstPoint(d.f); if (p) L.circleMarker([p.lat, p.lon], { radius: 6, color: '#b8451e', weight: 2, fillOpacity: 0.5 }).bindTooltip(`Gravearbejde: ${nice(d.lokation) || ''}`).addTo(ctx.overlay); }
+  if (!ev.length && !dg.length) return '<p class="muted">Ingen tilladelser, arrangementer eller gravearbejder registreret inden for 300 m lige nu eller de kommende uger.</p>';
+  let html = '';
+  if (dg.length) {
+    html += `<p><b>Gravearbejder (${dg.length})</b></p><ul>` + dg.slice(0, 6).map((d) =>
+      `<li><b>${esc(nice(d.lokation) || 'Ukendt sted')}</b>: ${esc([nice(d.kategori), nice(d.gravetype)].filter(Boolean).join(', ') || 'gravearbejde')}` +
+      `<br><span class="muted">${esc(fmtRange(d.projekt_start, d.projekt_slut))}${nice(d.tidspunkt_fra) ? ', kl. ' + esc(d.tidspunkt_fra) + '–' + esc(nice(d.tidspunkt_til) || '') : ''}` +
+      `${nice(d.bygherre) ? ' · for ' + esc(d.bygherre) : ''}${nice(d.entreprenoer) ? ' · udføres af ' + esc(d.entreprenoer) : ''} · ${Math.round(d.dist)} m</span></li>`).join('') +
+      (dg.length > 6 ? `<li class="muted">… og ${dg.length - 6} flere</li>` : '') + '</ul>';
+  }
+  if (ev.length) {
+    html += `<p><b>Andet på gaden (${ev.length})</b></p><ul>` + ev.slice(0, 8).map((e) => {
+      const what = nice(e.arrangementnavn) || nice(e.kategori) || nice(e.sagstype) || 'Tilladelse';
+      const kind = nice(e.arrangementnavn) && nice(e.kategori) ? ` <span class="tag">${esc(e.kategori)}</span>` : (nice(e.sagstype) && nice(e.sagstype) !== nice(e.kategori) ? ` <span class="tag">${esc(e.sagstype)}</span>` : '');
+      return `<li><b>${esc(what)}</b>${kind}<br><span class="muted">${esc(nice(e.lokation) || '')}${fmtRange(e.projekt_start, e.projekt_slut) ? ' · ' + esc(fmtRange(e.projekt_start, e.projekt_slut)) : ''} · ${Math.round(e.dist)} m</span></li>`;
+    }).join('') + (ev.length > 8 ? `<li class="muted">… og ${ev.length - 8} flere</li>` : '') + '</ul>';
+  }
+  return html;
+};
+
+// ---------- 3. Trafikmeldinger ----------
+LOADERS.traffic = async (lat, lon, ctx) => {
+  const fs = await wfs('trafikmelding', { lat, lon, d: 0.006, n: 60 });
+  const now = Date.now();
+  const items = fs.map((f) => ({ ...f.properties, dist: minDist(f, lat, lon), f }))
+    .filter((x) => x.dist <= 600 && (!nice(x.sluttidspunkt) || new Date(x.sluttidspunkt).getTime() > now - 86400000))
+    .sort((a, b) => a.dist - b.dist);
+  for (const x of items) L.geoJSON(x.f.geometry, { style: { color: '#b8451e', weight: 4, opacity: 0.7 } }).bindTooltip(`${nice(x.haendelsestype) || 'Trafikmelding'}: ${nice(x.stedfaestelse) || ''}`).addTo(ctx.overlay);
+  if (!items.length) return '<p class="muted">Ingen aktuelle trafikmeldinger inden for ca. 600 m.</p>';
+  return `<ul>` + items.slice(0, 8).map((x) =>
+    `<li><b>${esc(nice(x.haendelsestype) || 'Trafikmelding')}</b> · ${esc((nice(x.stedfaestelse) || '').trim())}` +
+    `${nice(x.trafikalt_restriktion) ? '<br>' + esc(x.trafikalt_restriktion.trim()) : ''}${nice(x.yderligere_information) ? '<br>' + esc(x.yderligere_information.trim()) : ''}` +
+    `<br><span class="muted">${esc(fmtRange(x.starttidspunkt, x.sluttidspunkt))} · ${Math.round(x.dist)} m</span></li>`).join('') +
+    (items.length > 8 ? `<li class="muted">… og ${items.length - 8} flere</li>` : '') + '</ul>';
+};
+
 // ---------- Start fra URL'ens hash ----------
 async function fromHash() {
   const h = decodeURIComponent(location.hash.slice(1));
