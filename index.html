@@ -392,6 +392,70 @@ LOADERS.traffic = async (lat, lon, ctx) => {
     (items.length > 8 ? `<li class="muted">… og ${items.length - 8} flere</li>` : '') + '</ul>';
 };
 
+// ---------- 4. Trafikstøj ----------
+function parseAddr(adresse) {
+  const m = (adresse || '').match(/^(.*?)\s+(\d+)([A-Za-z]?)\b/);
+  return m ? { vej: m[1].trim(), husnr: m[2] + (m[3] || '').toUpperCase() } : null;
+}
+LOADERS.noise = async (lat, lon, ctx) => {
+  const fs = await wfs('vejstoej_boliger_2022', { lat, lon, d: 0.0025, n: 1000 });
+  if (!fs.length) return '<p class="muted">Ingen boliger med støjberegning inden for ca. 250 m. Kortlægningen dækker kun boliger.</p>';
+  const pa = parseAddr(ctx.adresse);
+  let pts = fs.map((f) => ({ ...f.properties, dist: minDist(f, lat, lon) }));
+  let matched = pa ? pts.filter((p) => (p.vejnavn || '').toLowerCase() === pa.vej.toLowerCase() && String(p.husnummer).toUpperCase() === pa.husnr) : [];
+  let how;
+  if (matched.length) how = `${matched.length} bolig${matched.length > 1 ? 'er' : ''} på adressen`;
+  else { pts.sort((a, b) => a.dist - b.dist); matched = pts.filter((p) => p.dist <= pts[0].dist + 5); how = `nærmeste beregningspunkt, ${Math.round(pts[0].dist)} m herfra${nice(pts[0].vejnavn) ? ' (' + esc(pts[0].vejnavn) + ' ' + esc(pts[0].husnummer) + ')' : ''}`; }
+  const lden = matched.map((p) => +p.lden).filter((x) => !isNaN(x)), lnight = matched.map((p) => +p.lnight).filter((x) => !isNaN(x));
+  const mx = (a) => Math.max(...a), mn = (a) => Math.min(...a);
+  const rng = (a) => (a.length ? (mx(a) - mn(a) < 0.5 ? mx(a).toFixed(0) : `${mn(a).toFixed(0)}–${mx(a).toFixed(0)}`) : '?');
+  const worst = lden.length ? mx(lden) : null;
+  const tag = worst == null ? '' : worst >= 68 ? '<span class="tag warn">over 68 dB, kommunens grænse for stærkt støjbelastet</span>' : worst > 58 ? '<span class="tag warn">over Miljøstyrelsens vejledende 58 dB</span>' : worst > 53 ? '<span class="tag mid">over WHO’s 53 dB</span>' : '<span class="tag ok">under WHO’s vejledende 53 dB</span>';
+  return `<p class="big">${rng(lden)} dB<small>L<sub>den</sub>, døgnvægtet</small></p><p class="big">${rng(lnight)} dB<small>L<sub>night</sub>, kl. 22–07</small></p><p>${tag}</p>` +
+    `<p class="muted">Beregnet for ${how} i kommunens støjkortlægning 2022. WHO anbefaler under 53 dB L<sub>den</sub> for vejstøj; ved flere boliger vises spændet mellem den mindst og mest udsatte.</p>`;
+};
+
+// ---------- 5. Sol på taget ----------
+LOADERS.solar = async (lat, lon, ctx) => {
+  let fs = await wfs('solcellepotentiale', { lat, lon, d: 0.0004, n: 10 });
+  if (!fs.length) fs = await wfs('solcellepotentiale', { lat, lon, d: 0.0012, n: 20 });
+  if (!fs.length) return '<p class="muted">Ingen bygning med solcellevurdering lige her.</p>';
+  const f = containing(fs, lat, lon), p = f.properties;
+  const inside = contains(f, lat, lon);
+  L.geoJSON(f.geometry, { style: { color: '#e8b126', weight: 2, fillOpacity: 0.25 } }).bindTooltip(`Solcellepotentiale: ${p.mwh_pot} MWh/år`).addTo(ctx.overlay);
+  const mwh = +p.mwh_pot, hh = isFinite(mwh) ? Math.round(mwh * 1000 / 4000) : null; // ca. 4000 kWh pr. husstand
+  const kl = nice(p.mwh_pot_ka), k40 = nice(p.klasse_40);
+  const tagCls = /stort/i.test(kl || '') ? 'ok' : /middel|mellem/i.test(kl || '') ? 'mid' : '';
+  return `<p class="big">${isFinite(mwh) ? mwh.toLocaleString('da-DK') : '?'} MWh/år<small>muligt solcelleudbytte på taget</small></p>` +
+    `<p>${kl ? `<span class="tag ${tagCls}">${esc(kl)}</span>` : ''}${k40 ? `<span class="tag">tagets bedste flader: ${esc(k40)}</span>` : ''}</p>` +
+    `<p>${hh != null ? `Det svarer til årsforbruget i omkring <b>${hh}</b> husstande.` : ''} Tagareal ${esc(nice(p.arealbyg) ? Math.round(+p.arealbyg).toLocaleString('da-DK') : '?')} m², ${nice(p.tagdaekning) ? esc(p.tagdaekning.toLowerCase()) : 'ukendt tagdækning'}${nice(p.opfoerelse_aar) && p.opfoerelse_aar !== '0' ? `, bygget ${esc(p.opfoerelse_aar)}` : ''}.</p>` +
+    `<p class="muted">${inside ? 'Bygningen, punktet ligger i' : 'Nærmeste bygning, ' + Math.round(f._dist || 0) + ' m herfra'}${nice(p.adresse) ? ': ' + esc(p.adresse.replace(/\b0+(\d)/, '$1')) : ''}. Kommunens solcelleanalyse ud fra tagets form og skygge.</p>`;
+};
+
+// ---------- 6. Skybrud og stormflod ----------
+const DEPTH_WORDS = ['tørt', 'lidt vand', 'en del vand', 'meget vand', 'rigtig meget vand', 'dybt vand'];
+function depthWord(code) { const c = +code; return isNaN(c) ? 'ukendt' : (DEPTH_WORDS[Math.min(c, 5)] || 'dybt vand'); }
+LOADERS.flood = async (lat, lon, ctx) => {
+  const [a, b, s] = await Promise.all([
+    wfs('f2010cds100_1_0', { lat, lon, d: 0.0004, n: 20 }),
+    wfs('f2110cds100_1_077', { lat, lon, d: 0.0004, n: 20 }),
+    wfs('hmax263', { lat, lon, d: 0.0004, n: 20 }),
+  ]);
+  const hit = (fs) => fs.find((f) => contains(f, lat, lon));
+  const cls = (fs) => { const f = hit(fs); return f ? +f.properties.gridcode : 0; };
+  const c10 = cls(a), c110 = cls(b), cs = hit(s);
+  const row = (label, code, note) => {
+    const tag = code === 0 ? 'ok' : code <= 2 ? 'mid' : 'warn';
+    return `<li><b>${label}</b>: <span class="tag ${tag}">${depthWord(code)}</span>${note ? ` <span class="muted">${note}</span>` : ''}</li>`;
+  };
+  for (const f of [hit(a), hit(b)].filter(Boolean)) L.geoJSON(f.geometry, { style: { color: '#107078', weight: 1, fillOpacity: 0.2 } }).addTo(ctx.overlay);
+  let storm;
+  if (cs) { const g = +cs.properties.gridcode; storm = `<li><b>100-års-stormflod</b>: <span class="tag warn">under vand</span> <span class="muted">(klasse ${g} af 10, hvor højere er dybere)</span></li>`; }
+  else storm = `<li><b>100-års-stormflod</b>: <span class="tag ok">tørt</span></li>`;
+  return `<ul>${row('100-års-regn, i dag', c10, c10 ? `(klasse ${c10} af 5)` : '')}${row('100-års-regn, 2110', c110, c110 ? `(klasse ${c110} af 5)` : '')}${storm}</ul>` +
+    `<p class="muted">Kommunens skybrudsmodel for en regn, der statistisk falder én gang pr. 100 år, nu og med klimafremskrivning til 2110 (faktor 1,77). Klasserne er vanddybde på terræn; 0 er tørt. Stormflodskortet er en 100-års-hændelse med fremskrevet vandstand.</p>`;
+};
+
 // ---------- Start fra URL'ens hash ----------
 async function fromHash() {
   const h = decodeURIComponent(location.hash.slice(1));
